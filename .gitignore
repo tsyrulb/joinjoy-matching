@@ -1,0 +1,17 @@
+# Exclude Python virtual environment folder
+.venv/
+
+# Exclude VS Code settings folder (optional)
+.vscode/
+
+# Exclude compiled Python files
+__pycache__/
+*.py[cod]
+
+# Exclude environment files
+.env
+
+descriptions.txt
+taginfo-wikidata.db
+wikidata_p1282_key_value_cleaned.txt
+wikidata_p1282_key_value.txt

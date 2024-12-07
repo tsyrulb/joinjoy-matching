@@ -1,0 +1,10 @@
+Flask
+requests
+sentence-transformers
+pandas
+sqlalchemy
+pyodbc
+redis
+geopy
+scikit-learn
+torch
