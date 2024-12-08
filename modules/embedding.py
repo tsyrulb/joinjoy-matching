@@ -16,8 +16,7 @@ def compute_semantic_similarity(text1, text2):
     from sentence_transformers import util
     return util.pytorch_cos_sim(embedding1, embedding2).item()
 
-def compute_tfidf_similarity(text1, text2):
-    vectorizer = TfidfVectorizer()
-    tfidf_matrix = vectorizer.fit_transform([text1, text2])
+def compute_tfidf_similarity(text1, text2, vectorizer):
+    tfidf_matrix = vectorizer.transform([text1, text2])
     from sklearn.metrics.pairwise import cosine_similarity
     return cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
