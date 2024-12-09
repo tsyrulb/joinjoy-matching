@@ -16,6 +16,7 @@ from modules.similarity import calculate_distance, calculate_age
 from modules.feedback import (get_feedback_subcategories, adjust_similarity_with_feedback, adjust_profile_with_feedback)
 from modules.vector_search import VectorSearch
 from config import NET_CORE_API_BASE_URL
+import random
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
@@ -124,6 +125,172 @@ def is_user_available(user_id, activity_datetime):
                 if start <= time_of_day <= end:
                     return False
     return True
+
+def explain_recommendation(
+    user_id, 
+    recommended_user, 
+    user_subcat_list, 
+    positive_subcategories, 
+    requester_own_subcategories,
+    distance, 
+    semantic_similarity, 
+    tfidf_similarity_activity, 
+    tfidf_similarity_owner, 
+    age_similarity, 
+    subcategories_df
+):
+    intros = [
+        "We think you’ll hit it off because",
+        "Here’s why we believe you’d connect:",
+        "Based on what we know, you’re a great match because"
+    ]
+    closing_lines = [
+        "We hope you enjoy meeting this recommended user!",
+        "Sounds like a match worth exploring!",
+        "Why not say hello and see what happens?"
+    ]
+
+    insights = []
+
+    # Distinguish between direct matches and feedback-inferred matches
+    direct_matches = set(user_subcat_list).intersection(requester_own_subcategories)
+    feedback_matches = set(user_subcat_list).intersection(positive_subcategories)
+
+    # Convert subcategory IDs to names
+    def subs_to_names(sub_ids):
+        return [subcategories_df[subcategories_df['Id'] == sid]['Name'].values[0]
+                for sid in sub_ids if not subcategories_df[subcategories_df['Id'] == sid].empty]
+
+    direct_names = subs_to_names(direct_matches)
+    feedback_names = subs_to_names(feedback_matches)
+
+    # Mention direct chosen subcategories if any
+    if direct_names:
+        if len(direct_names) == 1:
+            insights.append(f"you both share a personal favorite: {direct_names[0]}")
+        else:
+            insights.append(f"you share interests you personally chose, like {', '.join(direct_names[:3])}")
+
+    # Mention feedback-inferred subcategories if any
+    if feedback_names:
+        if len(feedback_names) == 1:
+            insights.append(f"you both connect on {feedback_names[0]}, something you grew to like through positive feedback")
+        else:
+            insights.append(f"you also align on interests you liked via feedback, such as {', '.join(feedback_names[:3])}")
+
+    # Distance
+    if distance < 5:
+        insights.append("you’re practically neighbors!")
+    elif distance < 20:
+        insights.append("you live relatively close by")
+    else:
+        insights.append("distance won’t stop a good connection")
+
+    # Semantic similarity
+    if semantic_similarity > 0.7:
+        insights.append("your overall interests align remarkably well")
+    elif semantic_similarity > 0.4:
+        insights.append("there’s enough overlap in your interests to spark interesting chats")
+
+    # TF-IDF similarities
+    if tfidf_similarity_activity > 0.4:
+        insights.append("you share common ground related to this activity's theme")
+    if tfidf_similarity_owner > 0.4:
+        insights.append("your tastes harmonize with the activity creator’s style")
+
+    # Age similarity
+    if age_similarity > 0.5:
+        insights.append("you’re around the same age, making it easy to relate")
+
+    if not insights:
+        insights.append("you share some common interests")
+
+    import random
+    introduction = random.choice(intros)
+    closing = random.choice(closing_lines)
+
+    if len(insights) > 1:
+        narrative = introduction + " " + "; ".join(insights[:-1]) + " and " + insights[-1] + ". " + closing
+    else:
+        narrative = introduction + " " + insights[0] + ". " + closing
+
+    return narrative
+
+def explain_activity_recommendation(user_id, activity_id, user_subcat_list, positive_subcategories, requester_own_subcategories,
+                                   distance, semantic_similarity, tfidf_similarity, age_similarity, subcategories_df):
+    intros = [
+        "We think you’ll enjoy this activity because",
+        "Here’s why we believe you’d be interested in this activity:",
+        "Based on what we know, this activity might suit you because"
+    ]
+    closing_lines = [
+        "Why not give it a try?",
+        "Sounds like a great opportunity!",
+        "We hope you find this activity exciting!"
+    ]
+
+    insights = []
+
+    # Distinguish between direct chosen subcategories and feedback-inferred matches.
+    direct_matches = set(user_subcat_list).intersection(requester_own_subcategories)
+    feedback_matches = set(user_subcat_list).intersection(positive_subcategories)
+
+    def subs_to_names(sub_ids):
+        return [subcategories_df[subcategories_df['Id'] == sid]['Name'].values[0]
+                for sid in sub_ids if not subcategories_df[subcategories_df['Id'] == sid].empty]
+
+    direct_names = subs_to_names(direct_matches)
+    feedback_names = subs_to_names(feedback_matches)
+
+    # Mention direct chosen subcategories
+    if direct_names:
+        if len(direct_names) == 1:
+            insights.append(f"it matches your personal favorite interest: {direct_names[0]}")
+        else:
+            insights.append(f"it aligns with interests you personally chose, like {', '.join(direct_names[:3])}")
+
+    # Mention feedback-inferred subcategories
+    if feedback_names:
+        if len(feedback_names) == 1:
+            insights.append(f"it touches on {feedback_names[0]}, an interest you liked based on previous feedback")
+        else:
+            insights.append(f"it resonates with interests you grew to like, such as {', '.join(feedback_names[:3])}")
+
+    # Distance factor
+    if distance < 5:
+        insights.append("the location is right around the corner")
+    elif distance < 20:
+        insights.append("it's not too far from you")
+    else:
+        insights.append("even if it's a bit farther away, good experiences can be worth the travel")
+
+    # Semantic similarity
+    if semantic_similarity > 0.7:
+        insights.append("its overall theme aligns remarkably well with your profile")
+    elif semantic_similarity > 0.4:
+        insights.append("there’s enough overlap in what you enjoy to spark your interest")
+
+    # TF-IDF similarity
+    if tfidf_similarity > 0.4:
+        insights.append("the specific details of the activity match well with your tastes")
+
+    # Age similarity
+    if age_similarity > 0.5:
+        insights.append("the activity creator is around your age, making it more relatable")
+
+    if not insights:
+        insights.append("it generally matches some of your interests")
+
+    import random
+    introduction = random.choice(intros)
+    closing = random.choice(closing_lines)
+
+    if len(insights) > 1:
+        narrative = introduction + " " + "; ".join(insights[:-1]) + " and " + insights[-1] + ". " + closing
+    else:
+        narrative = introduction + " " + insights[0] + ". " + closing
+
+    return narrative
 
 ### INCREMENTAL UPDATE FUNCTIONS ###
 
@@ -242,6 +409,8 @@ def find_matches():
 def recommend_users():
     activity_id = request.args.get('activity_id', None)
     top_n = int(request.args.get('top_n', 20))
+    # New: userId parameter
+    requester_id = request.args.get('user_id', None)
 
     if not activity_id:
         return jsonify({"error": "activity_id is required"}), 400
@@ -250,15 +419,97 @@ def recommend_users():
     except ValueError:
         return jsonify({"error": "Invalid activity_id"}), 400
 
+    if requester_id is not None:
+        try:
+            requester_id = int(requester_id)
+        except ValueError:
+            return jsonify({"error": "Invalid user_id"}), 400
+
     users_df = app.cached_users_df
     activities_df = app.cached_activities_df
     subcategories_df = app.cached_subcategories_df
     user_subcategories_df = app.cached_user_subcategories_df
 
     activity = activities_df[activities_df['Id'] == activity_id]
-    if activity.empty:
-        return jsonify({"error": f"Activity with ID {activity_id} not found"}), 404
 
+    # Check if activity exists
+    if activity.empty:
+        # Activity not found. Use userId-based recommendation if userId provided.
+        if requester_id is not None and requester_id in app.user_embeddings:
+            # We have a requester with embeddings, do user-to-user similarity
+            requester_embedding = app.user_embeddings.get(requester_id)
+            if requester_embedding is not None:
+                top_candidates = app.vector_search.search_similar_users(requester_embedding, top_k=100)
+                candidate_user_ids = [hit.id for hit in top_candidates]
+                candidate_users = users_df[users_df['Id'].isin(candidate_user_ids)]
+
+                requester_feedbacks = fetch_user_feedbacks(requester_id)
+                positive_subcategories = get_feedback_subcategories(requester_feedbacks, user_subcategories_df, positive=True)
+                requester_own_subcategories = user_subcategories_df[user_subcategories_df['UserId'] == requester_id]['SubcategoryId'].tolist()
+
+                recommendations = []
+
+                for _, usr in candidate_users.iterrows():
+                    if usr['Id'] == requester_id:
+                        continue
+                    user_profile = app.user_profiles.get(usr['Id'], None)
+                    if not user_profile:
+                        continue
+
+                    distance = 0.0
+
+                    combined_similarity = 0.5
+                    explanation = "We couldn’t find the specified activity, but we used your own profile to find users who share similarities with you."
+
+                    recommendations.append({
+                        'UserId': usr['Id'],
+                        'UserName': usr['Name'],
+                        'SimilarityScore': combined_similarity,
+                        'Distance': distance,
+                        'Explanation': explanation
+                    })
+
+                recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
+                return jsonify(recommendations[:top_n])
+            else:
+                # requester_id does not have embeddings
+                # Fallback: return basic filtered users with uniform score
+                candidate_users = users_df
+                recommendations = []
+                for _, usr in candidate_users.iterrows():
+                    if usr['Id'] == requester_id:
+                        continue
+                    user_profile = app.user_profiles.get(usr['Id'], None)
+                    if not user_profile:
+                        continue
+                    recommendations.append({
+                        'UserId': usr['Id'],
+                        'UserName': usr['Name'],
+                        'SimilarityScore': 0.5,
+                        'Distance': 0.0,
+                        'Explanation': "No activity and no embeddings for requester, showing a generic list of users."
+                    })
+                recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
+                return jsonify(recommendations[:top_n])
+        else:
+            # No activity and no user_id or user_id not in embeddings: return generic list
+            candidate_users = users_df
+            recommendations = []
+            for _, usr in candidate_users.iterrows():
+                user_profile = app.user_profiles.get(usr['Id'], None)
+                if not user_profile:
+                    continue
+                recommendations.append({
+                    'UserId': usr['Id'],
+                    'UserName': usr['Name'],
+                    'SimilarityScore': 0.5,
+                    'Distance': 0.0,
+                    'Explanation': "No activity specified and no requester user_id provided, returning a generic list of users."
+                })
+            recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
+            return jsonify(recommendations[:top_n])
+
+    # If activity found, proceed as before with the activity logic:
     activity_lat = activity['Latitude'].values[0]
     activity_lon = activity['Longitude'].values[0]
     activity_profile = app.activity_profiles[activity_id]
@@ -275,6 +526,7 @@ def recommend_users():
 
     owner_feedbacks = fetch_user_feedbacks(created_by_id)
     positive_subcategories = get_feedback_subcategories(owner_feedbacks, user_subcategories_df, positive=True)
+    requester_own_subcategories = user_subcategories_df[user_subcategories_df['UserId'] == created_by_id]['SubcategoryId'].tolist()
 
     if activity_embedding is not None:
         query_vector = activity_embedding
@@ -347,14 +599,31 @@ def recommend_users():
             0.2 * age_similarity
         )
 
+        explanation = explain_recommendation(
+            user_id=created_by_id,
+            recommended_user=user_id,
+            user_subcat_list=user_subcat_list,
+            positive_subcategories=positive_subcategories,
+            requester_own_subcategories=requester_own_subcategories, 
+            distance=distance,
+            semantic_similarity=semantic_similarity,
+            tfidf_similarity_activity=tfidf_similarity_activity,
+            tfidf_similarity_owner=tfidf_similarity_owner,
+            age_similarity=age_similarity,
+            subcategories_df=subcategories_df
+        )
+
         recommendations.append({
             'UserId': usr['Id'],
             'UserName': usr['Name'],
             'SimilarityScore': combined_similarity,
-            'Distance': distance
+            'Distance': distance,
+            'Explanation': explanation
         })
 
     recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
+    print(recommendations)
+
     return jsonify(recommendations[:top_n])
 
 @app.route('/recommend_activities', methods=['GET'])
@@ -422,8 +691,13 @@ def recommend_activities():
             subcategories_df
         )
 
+        # Create and fit TF-IDF vectorizer for this specific comparison
+        tfidf_vectorizer = TfidfVectorizer()
+        # Fit on the two texts we're comparing
+        tfidf_vectorizer.fit([adjusted_user_profile, activity_profile])
+
         semantic_similarity = compute_semantic_similarity(adjusted_user_profile, activity_profile)
-        tfidf_similarity = compute_tfidf_similarity(adjusted_user_profile, activity_profile)
+        tfidf_similarity = compute_tfidf_similarity(adjusted_user_profile, activity_profile, tfidf_vectorizer)
 
         creator_id = activity['CreatedById']
         creator_age = None
@@ -443,15 +717,33 @@ def recommend_activities():
             0.2 * age_similarity
         )
 
+        # Just like with recommend_users, if you want explanations here:
+        activity_subcats = user_subcategories_df[user_subcategories_df['UserId'] == creator_id]['SubcategoryId'].tolist()
+        explanation = explain_activity_recommendation(
+            user_id=user_id,
+            activity_id=activity['Id'],
+            user_subcat_list=activity_subcats,
+            positive_subcategories=positive_subcategories,
+            requester_own_subcategories=user_subcategories_df[user_subcategories_df['UserId'] == user_id]['SubcategoryId'].tolist(),
+            distance=distance,
+            semantic_similarity=semantic_similarity,
+            tfidf_similarity=tfidf_similarity,
+            age_similarity=age_similarity,
+            subcategories_df=subcategories_df
+        )
+
         recommendations.append({
             'ActivityId': activity['Id'],
             'ActivityName': activity['Name'],
             'SimilarityScore': combined_similarity,
-            'Distance': distance
+            'Distance': distance,
+            'Explanation': explanation
         })
 
     recommendations = sorted(recommendations, key=lambda x: x['SimilarityScore'], reverse=True)[:top_n]
+    print(recommendations)
     return jsonify(recommendations)
+
 
 precompute_data()
 
