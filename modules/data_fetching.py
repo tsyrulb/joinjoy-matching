@@ -48,3 +48,18 @@ def fetch_user_feedbacks(user_id):
         ORDER BY Timestamp DESC
     """
     return pd.read_sql(feedbacks_query, engine)
+
+def fetch_activity_by_id(activity_id):
+    """
+    Fetch a single activity by its ID, including associated location data.
+    Returns a DataFrame with the queried activity.
+    """
+    engine = get_engine()
+    query = f"""
+        SELECT A.Id, A.Name, A.Description, A.LocationId, A.Date, A.CreatedById,
+               L.Latitude, L.Longitude
+        FROM Activities AS A
+        LEFT JOIN Locations AS L ON A.LocationId = L.Id
+        WHERE A.Id = {activity_id}
+    """
+    return pd.read_sql(query, engine)

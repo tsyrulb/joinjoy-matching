@@ -9,7 +9,7 @@ from datetime import datetime, time
 from flask_cors import CORS
 import torch
 from modules.keyword_matching import find_top_matches, key_value_pairs
-from modules.data_fetching import (fetch_users, fetch_activities, fetch_subcategories, fetch_user_subcategories, fetch_user_feedbacks, get_engine)
+from modules.data_fetching import (fetch_users, fetch_activities, fetch_subcategories, fetch_user_subcategories, fetch_user_feedbacks, get_engine, fetch_activity_by_id)
 from modules.caching import get_cached_profile
 from modules.embedding import compute_semantic_similarity, compute_tfidf_similarity, model, device
 from modules.similarity import calculate_distance, calculate_age
@@ -408,8 +408,7 @@ def find_matches():
 @app.route('/recommend_users', methods=['GET'])
 def recommend_users():
     activity_id = request.args.get('activity_id', None)
-    top_n = int(request.args.get('top_n', 20))
-    # New: userId parameter
+    top_n = int(request.args.get('top_n', 100))
     requester_id = request.args.get('user_id', None)
 
     if not activity_id:
@@ -432,53 +431,69 @@ def recommend_users():
 
     activity = activities_df[activities_df['Id'] == activity_id]
 
-    # Check if activity exists
+    # If activity not found in cached DF, try fetching from DB using the module function
     if activity.empty:
-        # Activity not found. Use userId-based recommendation if userId provided.
-        if requester_id is not None and requester_id in app.user_embeddings:
-            # We have a requester with embeddings, do user-to-user similarity
-            requester_embedding = app.user_embeddings.get(requester_id)
-            if requester_embedding is not None:
-                top_candidates = app.vector_search.search_similar_users(requester_embedding, top_k=100)
-                candidate_user_ids = [hit.id for hit in top_candidates]
-                candidate_users = users_df[users_df['Id'].isin(candidate_user_ids)]
+        new_activity_df = fetch_activity_by_id(activity_id)
 
-                requester_feedbacks = fetch_user_feedbacks(requester_id)
-                positive_subcategories = get_feedback_subcategories(requester_feedbacks, user_subcategories_df, positive=True)
-                requester_own_subcategories = user_subcategories_df[user_subcategories_df['UserId'] == requester_id]['SubcategoryId'].tolist()
+        if new_activity_df.empty:
+            # No activity found in DB either, fallback to user-based logic or generic list as before
+            if requester_id is not None and requester_id in app.user_embeddings:
+                requester_embedding = app.user_embeddings.get(requester_id)
+                if requester_embedding is not None:
+                    top_candidates = app.vector_search.search_similar_users(requester_embedding, top_k=100)
+                    candidate_user_ids = [hit.id for hit in top_candidates]
+                    candidate_users = users_df[users_df['Id'].isin(candidate_user_ids)]
 
-                recommendations = []
+                    requester_feedbacks = fetch_user_feedbacks(requester_id)
+                    positive_subcategories = get_feedback_subcategories(requester_feedbacks, user_subcategories_df, positive=True)
+                    requester_own_subcategories = user_subcategories_df[user_subcategories_df['UserId'] == requester_id]['SubcategoryId'].tolist()
 
-                for _, usr in candidate_users.iterrows():
-                    if usr['Id'] == requester_id:
-                        continue
-                    user_profile = app.user_profiles.get(usr['Id'], None)
-                    if not user_profile:
-                        continue
+                    recommendations = []
+                    for _, usr in candidate_users.iterrows():
+                        if usr['Id'] == requester_id:
+                            continue
+                        user_profile = app.user_profiles.get(usr['Id'], None)
+                        if not user_profile:
+                            continue
 
-                    distance = 0.0
+                        distance = 0.0
+                        combined_similarity = 0.5
+                        explanation = "We couldn’t find the specified activity, but we used your profile to find similar users."
 
-                    combined_similarity = 0.5
-                    explanation = "We couldn’t find the specified activity, but we used your own profile to find users who share similarities with you."
+                        recommendations.append({
+                            'UserId': usr['Id'],
+                            'UserName': usr['Name'],
+                            'SimilarityScore': combined_similarity,
+                            'Distance': distance,
+                            'Explanation': explanation
+                        })
 
-                    recommendations.append({
-                        'UserId': usr['Id'],
-                        'UserName': usr['Name'],
-                        'SimilarityScore': combined_similarity,
-                        'Distance': distance,
-                        'Explanation': explanation
-                    })
-
-                recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
-                return jsonify(recommendations[:top_n])
+                    recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
+                    return jsonify(recommendations[:top_n])
+                else:
+                    # requester_id no embeddings fallback
+                    candidate_users = users_df
+                    recommendations = []
+                    for _, usr in candidate_users.iterrows():
+                        if usr['Id'] == requester_id:
+                            continue
+                        user_profile = app.user_profiles.get(usr['Id'], None)
+                        if not user_profile:
+                            continue
+                        recommendations.append({
+                            'UserId': usr['Id'],
+                            'UserName': usr['Name'],
+                            'SimilarityScore': 0.5,
+                            'Distance': 0.0,
+                            'Explanation': "No activity and no embeddings for requester, showing a generic list of users."
+                        })
+                    recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
+                    return jsonify(recommendations[:top_n])
             else:
-                # requester_id does not have embeddings
-                # Fallback: return basic filtered users with uniform score
+                # No activity and no requester_id or no embeddings: generic list
                 candidate_users = users_df
                 recommendations = []
                 for _, usr in candidate_users.iterrows():
-                    if usr['Id'] == requester_id:
-                        continue
                     user_profile = app.user_profiles.get(usr['Id'], None)
                     if not user_profile:
                         continue
@@ -487,29 +502,31 @@ def recommend_users():
                         'UserName': usr['Name'],
                         'SimilarityScore': 0.5,
                         'Distance': 0.0,
-                        'Explanation': "No activity and no embeddings for requester, showing a generic list of users."
+                        'Explanation': "No activity specified and no requester user_id, returning generic list of users."
                     })
                 recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
                 return jsonify(recommendations[:top_n])
         else:
-            # No activity and no user_id or user_id not in embeddings: return generic list
-            candidate_users = users_df
-            recommendations = []
-            for _, usr in candidate_users.iterrows():
-                user_profile = app.user_profiles.get(usr['Id'], None)
-                if not user_profile:
-                    continue
-                recommendations.append({
-                    'UserId': usr['Id'],
-                    'UserName': usr['Name'],
-                    'SimilarityScore': 0.5,
-                    'Distance': 0.0,
-                    'Explanation': "No activity specified and no requester user_id provided, returning a generic list of users."
-                })
-            recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
-            return jsonify(recommendations[:top_n])
+            # Activity found in DB, append to cached_activities_df
+            app.cached_activities_df = pd.concat([app.cached_activities_df, new_activity_df], ignore_index=True)
+            activity = new_activity_df
 
-    # If activity found, proceed as before with the activity logic:
+            # Generate activity profile and embedding
+            activity_profile = generate_activity_profile(activity_id, app.cached_activities_df)
+            app.activity_profiles[activity_id] = activity_profile
+
+            activity_embedding = None
+            if activity_profile.strip():
+                emb = model.encode([activity_profile], convert_to_tensor=True).to(device)
+                activity_embedding = emb.squeeze(0).cpu().numpy().tolist()
+
+            app.activity_embeddings[activity_id] = activity_embedding
+            if activity_embedding is not None:
+                app.vector_search_activities.upsert_user_embedding(activity_id, activity_embedding)
+            else:
+                app.vector_search_activities.delete_user_embedding(activity_id)
+
+    # Activity is now found (either initially or from DB)
     activity_lat = activity['Latitude'].values[0]
     activity_lon = activity['Longitude'].values[0]
     activity_profile = app.activity_profiles[activity_id]
@@ -604,7 +621,7 @@ def recommend_users():
             recommended_user=user_id,
             user_subcat_list=user_subcat_list,
             positive_subcategories=positive_subcategories,
-            requester_own_subcategories=requester_own_subcategories, 
+            requester_own_subcategories=requester_own_subcategories,
             distance=distance,
             semantic_similarity=semantic_similarity,
             tfidf_similarity_activity=tfidf_similarity_activity,
@@ -622,8 +639,6 @@ def recommend_users():
         })
 
     recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
-    print(recommendations)
-
     return jsonify(recommendations[:top_n])
 
 @app.route('/recommend_activities', methods=['GET'])
