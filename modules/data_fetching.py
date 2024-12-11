@@ -3,11 +3,20 @@ from sqlalchemy import create_engine
 import pandas as pd
 from config import DB_SERVER, DB_NAME, TRUSTED_CONNECTION
 
+DB_USER = "sa"
+DB_PASSWORD = "YourStrongPassword123"
+DB_SERVER = "db"
+DB_NAME = "join-joy-db"
+
 def get_engine():
-    # Create SQLAlchemy engine
-    return create_engine(
-        f'mssql+pyodbc://{DB_SERVER}/{DB_NAME}?trusted_connection={TRUSTED_CONNECTION}&driver=ODBC+Driver+17+for+SQL+Server'
+    connection_str = (
+        f"mssql+pyodbc://{DB_USER}:{DB_PASSWORD}@{DB_SERVER}:1433/{DB_NAME}"
+        "?driver=ODBC+Driver+18+for+SQL+Server"
+        "&TrustServerCertificate=yes"
+        "&Authentication=SqlPassword"
     )
+    return create_engine(connection_str)
+
 
 def fetch_users():
     engine = get_engine()

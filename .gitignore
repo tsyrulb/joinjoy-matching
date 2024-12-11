@@ -3,6 +3,8 @@
 
 # Exclude VS Code settings folder (optional)
 .vscode/
+.volumes/
+.db_backup/
 
 # Exclude compiled Python files
 __pycache__/
@@ -10,8 +12,71 @@ __pycache__/
 
 # Exclude environment files
 .env
+config.py
 
 descriptions.txt
 taginfo-wikidata.db
 wikidata_p1282_key_value_cleaned.txt
 wikidata_p1282_key_value.txt
+Dockerfile
+docker-compose.yml
+config.py
+db_backup/join-joy-db.bak
+volumes/etcd/member/snap/db
+volumes/etcd/member/wal/0000000000000000-0000000000000000.wal
+volumes/milvus/rdb_data/000071.sst
+volumes/milvus/rdb_data/000073.log
+volumes/milvus/rdb_data/CURRENT
+volumes/milvus/rdb_data/IDENTITY
+volumes/milvus/rdb_data/LOCK
+volumes/milvus/rdb_data/LOG
+volumes/milvus/rdb_data/LOG.old.1733872864318482
+volumes/milvus/rdb_data/LOG.old.1733873335831106
+volumes/milvus/rdb_data/LOG.old.1733873837240442
+volumes/milvus/rdb_data/LOG.old.1733874177890641
+volumes/milvus/rdb_data/LOG.old.1733874431195705
+volumes/milvus/rdb_data/LOG.old.1733874653527702
+volumes/milvus/rdb_data/LOG.old.1733874999535389
+volumes/milvus/rdb_data/LOG.old.1733875418670934
+volumes/milvus/rdb_data/LOG.old.1733876318004124
+volumes/milvus/rdb_data/LOG.old.1733878493345095
+volumes/milvus/rdb_data/LOG.old.1733880930253482
+volumes/milvus/rdb_data/LOG.old.1733882457050700
+volumes/milvus/rdb_data/LOG.old.1733882696565172
+volumes/milvus/rdb_data/MANIFEST-000072
+volumes/milvus/rdb_data/OPTIONS-000069
+volumes/milvus/rdb_data/OPTIONS-000075
+volumes/milvus/rdb_data_meta_kv/000009.sst
+volumes/milvus/rdb_data_meta_kv/000070.sst
+volumes/milvus/rdb_data_meta_kv/000072.log
+volumes/milvus/rdb_data_meta_kv/CURRENT
+volumes/milvus/rdb_data_meta_kv/IDENTITY
+volumes/milvus/rdb_data_meta_kv/LOCK
+volumes/milvus/rdb_data_meta_kv/LOG
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733872864083736
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733873335563934
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733873836987185
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733874177594322
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733874430941570
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733874653265620
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733874999039051
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733875418357483
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733876317708523
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733878492873811
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733880929887549
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733882456745972
+volumes/milvus/rdb_data_meta_kv/LOG.old.1733882696191937
+volumes/milvus/rdb_data_meta_kv/MANIFEST-000071
+volumes/milvus/rdb_data_meta_kv/OPTIONS-000068
+volumes/milvus/rdb_data_meta_kv/OPTIONS-000074
+volumes/minio/.minio.sys/format.json
+volumes/minio/.minio.sys/buckets/.bloomcycle.bin/xl.meta
+volumes/minio/.minio.sys/buckets/.usage-cache.bin/xl.meta
+volumes/minio/.minio.sys/buckets/.usage.json/xl.meta
+volumes/minio/.minio.sys/buckets/a-bucket/.metadata.bin/xl.meta
+volumes/minio/.minio.sys/buckets/a-bucket/.usage-cache.bin/xl.meta
+volumes/minio/.minio.sys/config/config.json/xl.meta
+volumes/minio/.minio.sys/config/iam/format.json/xl.meta
+volumes/minio/.minio.sys/pool.bin/xl.meta
+volumes/minio/.minio.sys/tmp/.trash/f67ec08f-c655-456c-b8bb-a9b03edc3351
+config.py

@@ -365,10 +365,104 @@ def add_new_activity(activity_id):
 
 ### API ENDPOINTS FOR INCREMENTAL UPDATES ###
 
-@app.route('/update_user_subcategories/<int:user_id>', methods=['POST'])
-def update_user_subcategories_route(user_id):
-    update_user_subcategories(user_id)
-    return jsonify({"message": "User subcategories and embeddings updated"}), 200
+def precompute_data():
+    print("DEBUG: Precomputing data at startup...")
+
+    # Fetch data from DB
+    app.cached_users_df = fetch_users()
+    app.cached_activities_df = fetch_activities()
+    app.cached_subcategories_df = fetch_subcategories()
+    app.cached_user_subcategories_df = fetch_user_subcategories()
+
+    engine = get_engine()
+    user_unavailabilities_df = pd.read_sql("SELECT UserId, DayOfWeek, StartTime, EndTime FROM UserUnavailabilities", engine)
+
+    users_df = app.cached_users_df
+    activities_df = app.cached_activities_df
+    subcategories_df = app.cached_subcategories_df
+    user_subcategories_df = app.cached_user_subcategories_df
+
+    # Precompute user profiles & embeddings
+    app.user_profiles = {}
+    all_user_ids = []
+    all_user_profiles = []
+
+    for _, user in users_df.iterrows():
+        user_id = user['Id']
+        user_profile = generate_user_profile(user_id, user_subcategories_df, subcategories_df)
+        app.user_profiles[user_id] = user_profile
+        all_user_ids.append(user_id)
+        all_user_profiles.append(user_profile)
+
+    # Handle case where no user profiles exist or are empty
+    if len(all_user_profiles) > 0:
+        user_embeddings_tensor = model.encode(all_user_profiles, convert_to_tensor=True).to(device)
+        print("DEBUG: user_embeddings_tensor shape:", user_embeddings_tensor.shape)
+        if user_embeddings_tensor.dim() == 2 and user_embeddings_tensor.shape[0] > 0:
+            user_embeddings_list = user_embeddings_tensor.cpu().numpy().tolist()
+            app.user_embeddings = {uid: emb for uid, emb in zip(all_user_ids, user_embeddings_list)}
+
+            # Insert user embeddings into Milvus
+            app.vector_search = VectorSearch(collection_name="user_embeddings", dim=user_embeddings_tensor.shape[1])
+            app.vector_search.insert_user_embeddings(all_user_ids, user_embeddings_list)
+        else:
+            # No valid embeddings
+            app.user_embeddings = {}
+            app.vector_search = VectorSearch(collection_name="user_embeddings", dim=384) # default dim if needed
+            print("WARNING: No user embeddings generated. Possibly empty user profiles.")
+    else:
+        # No user profiles at all
+        app.user_embeddings = {}
+        app.vector_search = VectorSearch(collection_name="user_embeddings", dim=384) # default dim if needed
+        print("WARNING: No user profiles to encode.")
+
+    # Precompute activity profiles & embeddings
+    app.activity_profiles = {}
+    all_activity_ids = []
+    all_activity_profiles = []
+
+    for _, activity in activities_df.iterrows():
+        activity_id = activity['Id']
+        a_profile = generate_activity_profile(activity_id, activities_df)
+        app.activity_profiles[activity_id] = a_profile
+        all_activity_ids.append(activity_id)
+        all_activity_profiles.append(a_profile)
+
+    if len(all_activity_profiles) > 0:
+        activity_embeddings_tensor = model.encode(all_activity_profiles, convert_to_tensor=True).to(device)
+        print("DEBUG: activity_embeddings_tensor shape:", activity_embeddings_tensor.shape)
+        if activity_embeddings_tensor.dim() == 2 and activity_embeddings_tensor.shape[0] > 0:
+            activity_embeddings_list = activity_embeddings_tensor.cpu().numpy().tolist()
+            app.activity_embeddings = {aid: emb for aid, emb in zip(all_activity_ids, activity_embeddings_list)}
+
+            # Insert activity embeddings into Milvus
+            app.vector_search_activities = VectorSearch(collection_name="activity_embeddings", dim=activity_embeddings_tensor.shape[1])
+            app.vector_search_activities.insert_user_embeddings(all_activity_ids, activity_embeddings_list)
+        else:
+            # No valid activity embeddings
+            app.activity_embeddings = {}
+            app.vector_search_activities = VectorSearch(collection_name="activity_embeddings", dim=384) # default dim if needed
+            print("WARNING: No activity embeddings generated. Possibly empty activity profiles.")
+    else:
+        # No activities
+        app.activity_embeddings = {}
+        app.vector_search_activities = VectorSearch(collection_name="activity_embeddings", dim=384) # default dim if needed
+        print("WARNING: No activity profiles to encode.")
+
+    # Precompute user unavailabilities
+    app.user_unavailabilities = {}
+    for _, row in user_unavailabilities_df.iterrows():
+        uid = row['UserId']
+        day = row['DayOfWeek']
+        start = row['StartTime']
+        end = row['EndTime']
+        if uid not in app.user_unavailabilities:
+            app.user_unavailabilities[uid] = {}
+        if day not in app.user_unavailabilities[uid]:
+            app.user_unavailabilities[uid][day] = []
+        app.user_unavailabilities[uid][day].append((start, end))
+
+    print("DEBUG: Precomputation completed.")
 
 @app.route('/update_user_unavailability/<int:user_id>', methods=['POST'])
 def update_user_unavailability_route(user_id):
