@@ -17,6 +17,16 @@ def get_engine():
     )
     return create_engine(connection_str)
 
+def fetch_user_by_id(user_id):
+    engine = get_engine()
+    query = f"""
+        SELECT Users.Id, Users.Name, Users.Email, Users.DateOfBirth, Users.DistanceWillingToTravel, 
+               Locations.Latitude, Locations.Longitude
+        FROM Users
+        LEFT JOIN Locations ON Users.LocationId = Locations.Id
+        WHERE Users.Id = {user_id}
+    """
+    return pd.read_sql(query, engine)
 
 def fetch_users():
     engine = get_engine()

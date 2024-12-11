@@ -9,7 +9,7 @@ from datetime import datetime, time
 from flask_cors import CORS
 import torch
 from modules.keyword_matching import find_top_matches, key_value_pairs
-from modules.data_fetching import (fetch_users, fetch_activities, fetch_subcategories, fetch_user_subcategories, fetch_user_feedbacks, get_engine, fetch_activity_by_id)
+from modules.data_fetching import (fetch_users, fetch_activities, fetch_subcategories, fetch_user_subcategories, fetch_user_feedbacks, get_engine, fetch_activity_by_id, fetch_user_by_id)
 from modules.caching import get_cached_profile
 from modules.embedding import compute_semantic_similarity, compute_tfidf_similarity, model, device
 from modules.similarity import calculate_distance, calculate_age
@@ -474,6 +474,11 @@ def add_new_activity_route(activity_id):
     add_new_activity(activity_id)
     return jsonify({"message": "New activity added and embeddings updated"}), 200
 
+@app.route('/update_user_subcategories/<int:user_id>', methods=['POST'])
+def update_user_subcategories_route(user_id):
+    update_user_subcategories(user_id)
+    return jsonify({"message": "User subcategories updated"}), 200
+
 @app.route('/refresh_data', methods=['POST'])
 def refresh_data():
     if hasattr(app, 'cached_users_df'):
@@ -750,6 +755,34 @@ def recommend_activities():
     user_subcategories_df = app.cached_user_subcategories_df
 
     user = users_df[users_df['Id'] == user_id]
+
+    # If user not found in cached users, try to fetch from DB
+    if user.empty:
+        user_db = fetch_user_by_id(user_id)  # uses the helper function from data_fetching.py
+        if user_db.empty:
+            return jsonify({"error": f"User with ID {user_id} not found"}), 404
+
+        # Append this user to the cached DataFrame
+        app.cached_users_df = pd.concat([app.cached_users_df, user_db], ignore_index=True)
+        users_df = app.cached_users_df
+        user = user_db
+
+        # Generate user profile and embeddings for the newly added user
+        user_profile = generate_user_profile(user_id, user_subcategories_df, subcategories_df)
+        app.user_profiles[user_id] = user_profile
+
+        if user_profile.strip():
+            new_emb = model.encode([user_profile], convert_to_tensor=True).to(device)
+            embedding = new_emb.squeeze(0).cpu().numpy().tolist()
+            app.user_embeddings[user_id] = embedding
+            app.vector_search.upsert_user_embedding(user_id, embedding)
+        else:
+            # If user has no profile, remove embedding if exists
+            if user_id in app.user_embeddings:
+                del app.user_embeddings[user_id]
+            app.vector_search.delete_user_embedding(user_id)
+
+    # Continue as before, now `user` is guaranteed to be found
     if user.empty:
         return jsonify({"error": f"User with ID {user_id} not found"}), 404
 
@@ -775,7 +808,6 @@ def recommend_activities():
         candidate_activity_ids = [hit.id for hit in top_candidates]
         candidate_activities = activities_df[activities_df['Id'].isin(candidate_activity_ids)]
     else:
-        # If no embedding for user, fallback to all activities
         candidate_activities = activities_df
 
     recommendations = []
@@ -802,7 +834,6 @@ def recommend_activities():
 
         # Create and fit TF-IDF vectorizer for this specific comparison
         tfidf_vectorizer = TfidfVectorizer()
-        # Fit on the two texts we're comparing
         tfidf_vectorizer.fit([adjusted_user_profile, activity_profile])
 
         semantic_similarity = compute_semantic_similarity(adjusted_user_profile, activity_profile)
@@ -826,7 +857,6 @@ def recommend_activities():
             0.2 * age_similarity
         )
 
-        # Just like with recommend_users, if you want explanations here:
         activity_subcats = user_subcategories_df[user_subcategories_df['UserId'] == creator_id]['SubcategoryId'].tolist()
         explanation = explain_activity_recommendation(
             user_id=user_id,
