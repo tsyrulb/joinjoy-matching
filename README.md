@@ -54,8 +54,6 @@ This repository contains the Flask-based backend (the "Flask API") of the JoinJo
    export REDIS_PORT="6379"
    export REDIS_PASSWORD="your_redis_password"
    export NET_CORE_API_BASE_URL="https://webapi.example.com/api/matching"
-   export AZURE_BLOB_CONNECTION_STRING="DefaultEndpointsProtocol=..."
-   export AZURE_BLOB_CONTAINER_NAME="profile-photos"
    # Add any other required environment variables
    ```
 
