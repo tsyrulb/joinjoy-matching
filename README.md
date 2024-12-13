@@ -1,4 +1,5 @@
-```markdown
+---
+
 # Flask API for JoinJoy
 
 This repository contains the Flask-based backend (the "Flask API") of the JoinJoy project, a platform that intelligently recommends activities and users for social outings. It integrates semantic embeddings, vector search, and personalized recommendations.
@@ -44,7 +45,7 @@ This repository contains the Flask-based backend (the "Flask API") of the JoinJo
 
 3. **Environment Variables**:
 
-   Set environment variables for database connections, APIs, and keys, for example:
+   You need to set environment variables for database connections, APIs, and keys. For example:
    ```bash
    export DB_USER="your_db_user"
    export DB_PASSWORD="your_db_password"
@@ -56,8 +57,9 @@ This repository contains the Flask-based backend (the "Flask API") of the JoinJo
    export NET_CORE_API_BASE_URL="https://webapi.example.com/api/matching"
    export AZURE_BLOB_CONNECTION_STRING="DefaultEndpointsProtocol=..."
    export AZURE_BLOB_CONTAINER_NAME="profile-photos"
+   # Add any other required environment variables
    ```
-   
+
    Adjust these according to your configuration.
 
 4. **Database & Vector Setup**:
@@ -66,21 +68,21 @@ This repository contains the Flask-based backend (the "Flask API") of the JoinJo
    - Ensure Redis is reachable with given credentials.
 
 5. **Run Precomputation**:
-   Just run the app; it will fetch data, compute embeddings, and insert them into Milvus automatically.
+   The code precomputes embeddings and vector indexes at startup. Just run the app, it will fetch data, compute embeddings, and insert them into Milvus.
 
 6. **Run the Flask API**:
    ```bash
    flask run --host=0.0.0.0 --port=5001
    ```
    
-   By default, it runs in development mode. For production, consider using a WSGI server like gunicorn or deploying via Docker.
+   By default, it runs in development mode. For production, consider using a WSGI server like gunicorn.
 
 ## Endpoints
 
 - `GET /recommend_activities?user_id=<id>&top_n=<number>`: Returns top activity recommendations.
 - `GET /recommend_users?activity_id=<id>&user_id=<requester_id>&top_n=<number>`: Returns user recommendations for a given activity and requester.
 - `POST /find_matches`: Uses semantic key-value matches for interests.
-- `POST /refresh_data`: Refreshes cached data and embeddings.
+- `POST /refresh_data`: Refreshes cached data and embeddings (useful after updates).
 
 ## Docker & Deployment
 
@@ -93,7 +95,7 @@ This repository contains the Flask-based backend (the "Flask API") of the JoinJo
   docker run -p 5001:5001 --env-file .env yourusername/joinjoy-flaskapi:latest
   ```
 
-Deploying to platforms like [Railway](https://railway.app/) or Azure Web App for Containers is straightforward. Set environment variables on the hosting platform.
+Deploying to platforms like [Railway](https://railway.app/) or Azure Web App for Containers is straightforward. Set environment variables on the hosting platform and run the container image.
 
 ## Challenges & Solutions
 
@@ -104,6 +106,14 @@ Deploying to platforms like [Railway](https://railway.app/) or Azure Web App for
 ## Contributing
 
 Contributions are welcome. Please open an issue or submit a pull request.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+---
+
+Adjust any details above to fit your exact setup, endpoints, environment variable names, and instructions.
 
 ## License
 
