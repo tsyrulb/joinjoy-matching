@@ -27,7 +27,6 @@ This repository contains the Flask-based backend (the "Flask API") of the JoinJo
 - Python 3.10 or above
 - A running instance of Azure SQL Database
 - Access to Zilliz Cloud (or Milvus) and Redis
-- Azure Blob Storage container and its connection string
 - (Optional) Docker for containerized deployment
 
 ## Installation & Setup
@@ -95,7 +94,6 @@ This repository contains the Flask-based backend (the "Flask API") of the JoinJo
   docker run -p 5001:5001 --env-file .env yourusername/joinjoy-flaskapi:latest
   ```
 
-Deploying to platforms like [Railway](https://railway.app/) or Azure Web App for Containers is straightforward. Set environment variables on the hosting platform and run the container image.
 
 ## Challenges & Solutions
 
