@@ -1,144 +1,127 @@
-from flask import Flask, jsonify, request, current_app as app
-import requests
+import random
 import warnings
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sentence_transformers import util
-import numpy as np
 from datetime import datetime, time
-from flask_cors import CORS
+
+import numpy as np
+import pandas as pd
+import requests
 import torch
-from modules.keyword_matching import find_top_matches, key_value_pairs
-from modules.data_fetching import (fetch_users, fetch_activities, fetch_subcategories, fetch_user_subcategories, fetch_user_feedbacks, get_engine, fetch_activity_by_id, fetch_user_by_id)
-from modules.caching import get_cached_profile
+from flask import Flask, jsonify, request, current_app as app
+from flask_cors import CORS
+from sentence_transformers import util
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+from modules.caching import cache, get_cached_profile
+from modules.data_fetching import (fetch_users, fetch_activities, fetch_subcategories, 
+                                   fetch_user_subcategories, fetch_user_feedbacks, 
+                                   get_engine, fetch_activity_by_id, fetch_user_by_id)
 from modules.embedding import compute_semantic_similarity, compute_tfidf_similarity, model, device
+from modules.feedback import (get_feedback_subcategories, adjust_similarity_with_feedback, 
+                              adjust_profile_with_feedback)
+from modules.keyword_matching import find_top_matches, key_value_pairs
 from modules.similarity import calculate_distance, calculate_age
-from modules.feedback import (get_feedback_subcategories, adjust_similarity_with_feedback, adjust_profile_with_feedback)
 from modules.vector_search import VectorSearch
 from config import NET_CORE_API_BASE_URL
-import random
+
 
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["https://joinjoy.up.railway.app"])
 
 def generate_user_profile(user_id, user_subcategories_df, subcategories_df):
-    user_subcategories = user_subcategories_df[user_subcategories_df['UserId'] == user_id]
-    if user_subcategories.empty:
+    """
+    Generate a user's profile by aggregating subcategory names associated with that user.
+
+    Parameters:
+        user_id (int): The ID of the user.
+        user_subcategories_df (DataFrame): DataFrame of user-subcategory relationships.
+        subcategories_df (DataFrame): DataFrame of subcategories with their names.
+
+    Returns:
+        str: A space-separated string of subcategory names chosen by the user.
+    """
+    user_subs = user_subcategories_df[user_subcategories_df['UserId'] == user_id]
+    if user_subs.empty:
         return ''
     subcategory_names = []
-    for _, row in user_subcategories.iterrows():
-        subcategory_row = subcategories_df[subcategories_df['Id'] == row['SubcategoryId']]
-        if not subcategory_row.empty:
-            subcategory_name = subcategory_row['Name'].values[0]
+    for _, row in user_subs.iterrows():
+        matching_sub = subcategories_df[subcategories_df['Id'] == row['SubcategoryId']]
+        if not matching_sub.empty:
+            subcategory_name = matching_sub['Name'].values[0]
             subcategory_names.append(subcategory_name)
     return ' '.join(subcategory_names)
 
+
 def generate_activity_profile(activity_id, activities_df):
+    """
+    Generate an activity profile (its descriptive text).
+
+    Parameters:
+        activity_id (int): The ID of the activity.
+        activities_df (DataFrame): DataFrame of activities.
+
+    Returns:
+        str: The activity's description or an empty string if not found.
+    """
     activity = activities_df[activities_df['Id'] == activity_id]
-    if not activity.empty:
-        return activity['Description'].values[0].strip()
-    return ''
+    return activity['Description'].values[0].strip() if not activity.empty else ''
 
-def precompute_data():
-    print("DEBUG: Precomputing data at startup...")
-
-    # Fetch data from DB
-    app.cached_users_df = fetch_users()
-    app.cached_activities_df = fetch_activities()
-    app.cached_subcategories_df = fetch_subcategories()
-    app.cached_user_subcategories_df = fetch_user_subcategories()
-
-    engine = get_engine()
-    user_unavailabilities_df = pd.read_sql("SELECT UserId, DayOfWeek, StartTime, EndTime FROM UserUnavailabilities", engine)
-
-    users_df = app.cached_users_df
-    activities_df = app.cached_activities_df
-    subcategories_df = app.cached_subcategories_df
-    user_subcategories_df = app.cached_user_subcategories_df
-
-    # Precompute user profiles & embeddings
-    app.user_profiles = {}
-    all_user_ids = []
-    all_user_profiles = []
-
-    for _, user in users_df.iterrows():
-        user_id = user['Id']
-        user_profile = generate_user_profile(user_id, user_subcategories_df, subcategories_df)
-        app.user_profiles[user_id] = user_profile
-        all_user_ids.append(user_id)
-        all_user_profiles.append(user_profile)
-
-    user_embeddings_tensor = model.encode(all_user_profiles, convert_to_tensor=True).to(device)
-    user_embeddings_list = user_embeddings_tensor.cpu().numpy().tolist()
-    app.user_embeddings = {uid: emb for uid, emb in zip(all_user_ids, user_embeddings_list)}
-
-    # Insert user embeddings into Milvus
-    app.vector_search = VectorSearch(collection_name="user_embeddings", dim=user_embeddings_tensor.shape[1])
-    app.vector_search.insert_user_embeddings(all_user_ids, user_embeddings_list)
-
-    # Precompute activity profiles & embeddings
-    app.activity_profiles = {}
-    all_activity_ids = []
-    all_activity_profiles = []
-
-    for _, activity in activities_df.iterrows():
-        activity_id = activity['Id']
-        a_profile = generate_activity_profile(activity_id, activities_df)
-        app.activity_profiles[activity_id] = a_profile
-        all_activity_ids.append(activity_id)
-        all_activity_profiles.append(a_profile)
-
-    activity_embeddings_tensor = model.encode(all_activity_profiles, convert_to_tensor=True).to(device)
-    activity_embeddings_list = activity_embeddings_tensor.cpu().numpy().tolist()
-
-    app.activity_embeddings = {aid: emb for aid, emb in zip(all_activity_ids, activity_embeddings_list)}
-
-    # Insert activity embeddings into Milvus
-    app.vector_search_activities = VectorSearch(collection_name="activity_embeddings", dim=activity_embeddings_tensor.shape[1])
-    app.vector_search_activities.insert_user_embeddings(all_activity_ids, activity_embeddings_list)  
-
-    # Precompute user unavailabilities
-    app.user_unavailabilities = {}
-    for _, row in user_unavailabilities_df.iterrows():
-        uid = row['UserId']
-        day = row['DayOfWeek']
-        start = row['StartTime']
-        end = row['EndTime']
-        if uid not in app.user_unavailabilities:
-            app.user_unavailabilities[uid] = {}
-        if day not in app.user_unavailabilities[uid]:
-            app.user_unavailabilities[uid][day] = []
-        app.user_unavailabilities[uid][day].append((start, end))
-
-    print("DEBUG: Precomputation completed.")
 
 def is_user_available(user_id, activity_datetime):
-    day_of_week = activity_datetime.weekday() 
+    """
+    Check if a user is available at the given datetime based on stored unavailability slots.
+
+    Parameters:
+        user_id (int): The ID of the user.
+        activity_datetime (datetime): The date and time of the activity.
+
+    Returns:
+        bool: True if the user is available, False otherwise.
+    """
+    day_of_week = activity_datetime.weekday()
     time_of_day = activity_datetime.time()
 
     if user_id in app.user_unavailabilities:
         if day_of_week in app.user_unavailabilities[user_id]:
-            blocks = app.user_unavailabilities[user_id][day_of_week]
-            for (start, end) in blocks:
+            for (start, end) in app.user_unavailabilities[user_id][day_of_week]:
                 if start <= time_of_day <= end:
                     return False
     return True
 
+
 def explain_recommendation(
-    user_id, 
-    recommended_user, 
-    user_subcat_list, 
-    positive_subcategories, 
+    user_id,
+    recommended_user,
+    user_subcat_list,
+    positive_subcategories,
     requester_own_subcategories,
-    distance, 
-    semantic_similarity, 
-    tfidf_similarity_activity, 
-    tfidf_similarity_owner, 
-    age_similarity, 
+    distance,
+    semantic_similarity,
+    tfidf_similarity_activity,
+    tfidf_similarity_owner,
+    age_similarity,
     subcategories_df
 ):
+    """
+    Construct an explanatory narrative for a recommended user match.
+
+    Parameters:
+        user_id (int): The ID of the requesting user.
+        recommended_user (int): The ID of the recommended user.
+        user_subcat_list (list): List of subcategory IDs associated with the recommended user.
+        positive_subcategories (list): List of subcategories inferred as positive by feedback.
+        requester_own_subcategories (list): Subcategories the requester personally chose.
+        distance (float): Distance between the users.
+        semantic_similarity (float): Overall semantic similarity between their profiles.
+        tfidf_similarity_activity (float): TF-IDF similarity related to the activity.
+        tfidf_similarity_owner (float): TF-IDF similarity related to the activity's owner.
+        age_similarity (float): Age similarity measure between the two users.
+        subcategories_df (DataFrame): DataFrame of subcategories to retrieve names.
+
+    Returns:
+        str: A narrative explaining why this user is recommended.
+    """
     intros = [
         "We think you’ll hit it off because",
         "Here’s why we believe you’d connect:",
@@ -150,35 +133,35 @@ def explain_recommendation(
         "Why not say hello and see what happens?"
     ]
 
-    insights = []
+    # Helper to get subcategory names
+    def subs_to_names(sub_ids):
+        return [
+            subcategories_df[subcategories_df['Id'] == sid]['Name'].values[0]
+            for sid in sub_ids if not subcategories_df[subcategories_df['Id'] == sid].empty
+        ]
 
-    # Distinguish between direct matches and feedback-inferred matches
+    insights = []
     direct_matches = set(user_subcat_list).intersection(requester_own_subcategories)
     feedback_matches = set(user_subcat_list).intersection(positive_subcategories)
-
-    # Convert subcategory IDs to names
-    def subs_to_names(sub_ids):
-        return [subcategories_df[subcategories_df['Id'] == sid]['Name'].values[0]
-                for sid in sub_ids if not subcategories_df[subcategories_df['Id'] == sid].empty]
 
     direct_names = subs_to_names(direct_matches)
     feedback_names = subs_to_names(feedback_matches)
 
-    # Mention direct chosen subcategories if any
+    # Mention direct chosen subcategories
     if direct_names:
         if len(direct_names) == 1:
             insights.append(f"you both share a personal favorite: {direct_names[0]}")
         else:
             insights.append(f"you share interests you personally chose, like {', '.join(direct_names[:3])}")
 
-    # Mention feedback-inferred subcategories if any
+    # Mention feedback-inferred subcategories
     if feedback_names:
         if len(feedback_names) == 1:
             insights.append(f"you both connect on {feedback_names[0]}, something you grew to like through positive feedback")
         else:
             insights.append(f"you also align on interests you liked via feedback, such as {', '.join(feedback_names[:3])}")
 
-    # Distance
+    # Distance insight
     if distance < 5:
         insights.append("you’re practically neighbors!")
     elif distance < 20:
@@ -186,7 +169,7 @@ def explain_recommendation(
     else:
         insights.append("distance won’t stop a good connection")
 
-    # Semantic similarity
+    # Semantic similarity insight
     if semantic_similarity > 0.7:
         insights.append("your overall interests align remarkably well")
     elif semantic_similarity > 0.4:
@@ -205,19 +188,47 @@ def explain_recommendation(
     if not insights:
         insights.append("you share some common interests")
 
-    import random
     introduction = random.choice(intros)
     closing = random.choice(closing_lines)
 
     if len(insights) > 1:
-        narrative = introduction + " " + "; ".join(insights[:-1]) + " and " + insights[-1] + ". " + closing
+        narrative = f"{introduction} {('; '.join(insights[:-1]))} and {insights[-1]}. {closing}"
     else:
-        narrative = introduction + " " + insights[0] + ". " + closing
+        narrative = f"{introduction} {insights[0]}. {closing}"
 
     return narrative
 
-def explain_activity_recommendation(user_id, activity_id, user_subcat_list, positive_subcategories, requester_own_subcategories,
-                                   distance, semantic_similarity, tfidf_similarity, age_similarity, subcategories_df):
+
+def explain_activity_recommendation(
+    user_id,
+    activity_id,
+    user_subcat_list,
+    positive_subcategories,
+    requester_own_subcategories,
+    distance,
+    semantic_similarity,
+    tfidf_similarity,
+    age_similarity,
+    subcategories_df
+):
+    """
+    Construct a narrative explaining why a particular activity is recommended to the user.
+
+    Parameters:
+        user_id (int): The ID of the requesting user.
+        activity_id (int): The ID of the recommended activity.
+        user_subcat_list (list): Subcategories associated with the activity creator.
+        positive_subcategories (list): Subcategories inferred as positive by feedback.
+        requester_own_subcategories (list): Subcategories the requester personally chose.
+        distance (float): Distance factor between user and activity location.
+        semantic_similarity (float): Semantic similarity between user profile and activity.
+        tfidf_similarity (float): TF-IDF similarity between user profile and activity description.
+        age_similarity (float): Age similarity between user and activity creator.
+        subcategories_df (DataFrame): DataFrame of subcategories to retrieve names.
+
+    Returns:
+        str: A narrative explaining why this activity is recommended.
+    """
     intros = [
         "We think you’ll enjoy this activity because",
         "Here’s why we believe you’d be interested in this activity:",
@@ -229,27 +240,27 @@ def explain_activity_recommendation(user_id, activity_id, user_subcat_list, posi
         "We hope you find this activity exciting!"
     ]
 
-    insights = []
+    def subs_to_names(sub_ids):
+        return [
+            subcategories_df[subcategories_df['Id'] == sid]['Name'].values[0]
+            for sid in sub_ids if not subcategories_df[subcategories_df['Id'] == sid].empty
+        ]
 
-    # Distinguish between direct chosen subcategories and feedback-inferred matches.
+    insights = []
     direct_matches = set(user_subcat_list).intersection(requester_own_subcategories)
     feedback_matches = set(user_subcat_list).intersection(positive_subcategories)
-
-    def subs_to_names(sub_ids):
-        return [subcategories_df[subcategories_df['Id'] == sid]['Name'].values[0]
-                for sid in sub_ids if not subcategories_df[subcategories_df['Id'] == sid].empty]
 
     direct_names = subs_to_names(direct_matches)
     feedback_names = subs_to_names(feedback_matches)
 
-    # Mention direct chosen subcategories
+    # Direct chosen subcategories
     if direct_names:
         if len(direct_names) == 1:
             insights.append(f"it matches your personal favorite interest: {direct_names[0]}")
         else:
             insights.append(f"it aligns with interests you personally chose, like {', '.join(direct_names[:3])}")
 
-    # Mention feedback-inferred subcategories
+    # Feedback-inferred subcategories
     if feedback_names:
         if len(feedback_names) == 1:
             insights.append(f"it touches on {feedback_names[0]}, an interest you liked based on previous feedback")
@@ -281,25 +292,26 @@ def explain_activity_recommendation(user_id, activity_id, user_subcat_list, posi
     if not insights:
         insights.append("it generally matches some of your interests")
 
-    import random
     introduction = random.choice(intros)
     closing = random.choice(closing_lines)
 
     if len(insights) > 1:
-        narrative = introduction + " " + "; ".join(insights[:-1]) + " and " + insights[-1] + ". " + closing
+        narrative = f"{introduction} {('; '.join(insights[:-1]))} and {insights[-1]}. {closing}"
     else:
-        narrative = introduction + " " + insights[0] + ". " + closing
+        narrative = f"{introduction} {insights[0]}. {closing}"
 
     return narrative
 
-### INCREMENTAL UPDATE FUNCTIONS ###
 
 def update_user_subcategories(user_id):
+    """
+    Update a user's profile and embeddings based on their chosen subcategories.
+    """
     engine = get_engine()
-    user_subcategories_df = pd.read_sql("SELECT UserId, SubcategoryId, Weight FROM UserSubcategories", engine)
-    subcategories_df = pd.read_sql("SELECT Id, Name, CategoryId FROM Subcategories", engine)
+    user_sub_df = pd.read_sql("SELECT UserId, SubcategoryId, Weight FROM UserSubcategories", engine)
+    subcat_df = pd.read_sql("SELECT Id, Name, CategoryId FROM Subcategories", engine)
 
-    user_profile = generate_user_profile(user_id, user_subcategories_df, subcategories_df)
+    user_profile = generate_user_profile(user_id, user_sub_df, subcat_df)
     app.user_profiles[user_id] = user_profile
 
     embedding = None
@@ -315,9 +327,16 @@ def update_user_subcategories(user_id):
             del app.user_embeddings[user_id]
         app.vector_search.delete_user_embedding(user_id)
 
+
 def update_user_unavailability(user_id):
+    """
+    Update the user's unavailability schedule from the database.
+    """
     engine = get_engine()
-    user_unavail_df = pd.read_sql(f"SELECT UserId, DayOfWeek, StartTime, EndTime FROM UserUnavailabilities WHERE UserId={user_id}", engine)
+    user_unavail_df = pd.read_sql(
+        f"SELECT UserId, DayOfWeek, StartTime, EndTime FROM UserUnavailabilities WHERE UserId={user_id}",
+        engine
+    )
 
     if user_id in app.user_unavailabilities:
         del app.user_unavailabilities[user_id]
@@ -327,43 +346,45 @@ def update_user_unavailability(user_id):
         day = row['DayOfWeek']
         start = row['StartTime']
         end = row['EndTime']
+
         if uid not in app.user_unavailabilities:
             app.user_unavailabilities[uid] = {}
         if day not in app.user_unavailabilities[uid]:
             app.user_unavailabilities[uid][day] = []
         app.user_unavailabilities[uid][day].append((start, end))
 
+
 def add_new_activity(activity_id):
+    """
+    Add a newly created activity to the cache and update its embeddings.
+    """
     engine = get_engine()
     new_activity_df = pd.read_sql(f"""
-        SELECT Activities.Id, Activities.Name, Activities.Description, Activities.LocationId, Activities.Date, Activities.CreatedById, Locations.Latitude, Locations.Longitude
-        FROM Activities
-        LEFT JOIN Locations ON Activities.LocationId=Locations.Id
-        WHERE Activities.Id = {activity_id}
+        SELECT A.Id, A.Name, A.Description, A.LocationId, A.Date, A.CreatedById, 
+               L.Latitude, L.Longitude
+        FROM Activities AS A
+        LEFT JOIN Locations AS L ON A.LocationId=L.Id
+        WHERE A.Id = {activity_id}
     """, engine)
 
     if new_activity_df.empty:
         return
 
-    # Append the new activity to cached_activities_df
     app.cached_activities_df = pd.concat([app.cached_activities_df, new_activity_df], ignore_index=True)
-
     activity_profile = generate_activity_profile(activity_id, app.cached_activities_df)
     app.activity_profiles[activity_id] = activity_profile
 
-    activity_embedding = None
+    embedding = None
     if activity_profile.strip():
         emb = model.encode([activity_profile], convert_to_tensor=True).to(device)
-        activity_embedding = emb.squeeze(0).cpu().numpy().tolist()
+        embedding = emb.squeeze(0).cpu().numpy().tolist()
 
-    app.activity_embeddings[activity_id] = activity_embedding
-    if activity_embedding is not None:
-        app.vector_search_activities.upsert_user_embedding(activity_id, activity_embedding)
+    app.activity_embeddings[activity_id] = embedding
+    if embedding is not None:
+        app.vector_search_activities.upsert_user_embedding(activity_id, embedding)
     else:
         app.vector_search_activities.delete_user_embedding(activity_id)
 
-
-### API ENDPOINTS FOR INCREMENTAL UPDATES ###
 
 def precompute_data():
     print("DEBUG: Precomputing data at startup...")
@@ -389,31 +410,38 @@ def precompute_data():
 
     for _, user in users_df.iterrows():
         user_id = user['Id']
-        user_profile = generate_user_profile(user_id, user_subcategories_df, subcategories_df)
+        # Use caching for user profiles
+        user_profile = get_cached_profile(
+            key=f"user_profile_{user_id}",
+            generate_func=generate_user_profile,
+            user_id=user_id,
+            user_subcategories_df=user_subcategories_df,
+            subcategories_df=subcategories_df
+        )
+
         app.user_profiles[user_id] = user_profile
         all_user_ids.append(user_id)
         all_user_profiles.append(user_profile)
 
-    # Handle case where no user profiles exist or are empty
-    if len(all_user_profiles) > 0:
+    if all_user_profiles:
         user_embeddings_tensor = model.encode(all_user_profiles, convert_to_tensor=True).to(device)
         print("DEBUG: user_embeddings_tensor shape:", user_embeddings_tensor.shape)
+
         if user_embeddings_tensor.dim() == 2 and user_embeddings_tensor.shape[0] > 0:
             user_embeddings_list = user_embeddings_tensor.cpu().numpy().tolist()
             app.user_embeddings = {uid: emb for uid, emb in zip(all_user_ids, user_embeddings_list)}
-
-            # Insert user embeddings into Milvus
-            app.vector_search = VectorSearch(collection_name="user_embeddings", dim=user_embeddings_tensor.shape[1])
+            app.vector_search = VectorSearch(
+                collection_name="user_embeddings",
+                dim=user_embeddings_tensor.shape[1]
+            )
             app.vector_search.insert_user_embeddings(all_user_ids, user_embeddings_list)
         else:
-            # No valid embeddings
             app.user_embeddings = {}
-            app.vector_search = VectorSearch(collection_name="user_embeddings", dim=384) # default dim if needed
+            app.vector_search = VectorSearch(collection_name="user_embeddings", dim=384)
             print("WARNING: No user embeddings generated. Possibly empty user profiles.")
     else:
-        # No user profiles at all
         app.user_embeddings = {}
-        app.vector_search = VectorSearch(collection_name="user_embeddings", dim=384) # default dim if needed
+        app.vector_search = VectorSearch(collection_name="user_embeddings", dim=384)
         print("WARNING: No user profiles to encode.")
 
     # Precompute activity profiles & embeddings
@@ -423,30 +451,38 @@ def precompute_data():
 
     for _, activity in activities_df.iterrows():
         activity_id = activity['Id']
-        a_profile = generate_activity_profile(activity_id, activities_df)
-        app.activity_profiles[activity_id] = a_profile
-        all_activity_ids.append(activity_id)
-        all_activity_profiles.append(a_profile)
+        # Use caching for activity profiles
+        activity_profile = get_cached_profile(
+            key=f"activity_profile_{activity_id}",
+            generate_func=generate_activity_profile,
+            activity_id=activity_id,
+            activities_df=activities_df
+        )
 
-    if len(all_activity_profiles) > 0:
+        app.activity_profiles[activity_id] = activity_profile
+        all_activity_ids.append(activity_id)
+        all_activity_profiles.append(activity_profile)
+
+    if all_activity_profiles:
         activity_embeddings_tensor = model.encode(all_activity_profiles, convert_to_tensor=True).to(device)
         print("DEBUG: activity_embeddings_tensor shape:", activity_embeddings_tensor.shape)
+
         if activity_embeddings_tensor.dim() == 2 and activity_embeddings_tensor.shape[0] > 0:
             activity_embeddings_list = activity_embeddings_tensor.cpu().numpy().tolist()
             app.activity_embeddings = {aid: emb for aid, emb in zip(all_activity_ids, activity_embeddings_list)}
 
-            # Insert activity embeddings into Milvus
-            app.vector_search_activities = VectorSearch(collection_name="activity_embeddings", dim=activity_embeddings_tensor.shape[1])
+            app.vector_search_activities = VectorSearch(
+                collection_name="activity_embeddings",
+                dim=activity_embeddings_tensor.shape[1]
+            )
             app.vector_search_activities.insert_user_embeddings(all_activity_ids, activity_embeddings_list)
         else:
-            # No valid activity embeddings
             app.activity_embeddings = {}
-            app.vector_search_activities = VectorSearch(collection_name="activity_embeddings", dim=384) # default dim if needed
+            app.vector_search_activities = VectorSearch(collection_name="activity_embeddings", dim=384)
             print("WARNING: No activity embeddings generated. Possibly empty activity profiles.")
     else:
-        # No activities
         app.activity_embeddings = {}
-        app.vector_search_activities = VectorSearch(collection_name="activity_embeddings", dim=384) # default dim if needed
+        app.vector_search_activities = VectorSearch(collection_name="activity_embeddings", dim=384)
         print("WARNING: No activity profiles to encode.")
 
     # Precompute user unavailabilities
@@ -456,6 +492,7 @@ def precompute_data():
         day = row['DayOfWeek']
         start = row['StartTime']
         end = row['EndTime']
+
         if uid not in app.user_unavailabilities:
             app.user_unavailabilities[uid] = {}
         if day not in app.user_unavailabilities[uid]:
@@ -463,6 +500,8 @@ def precompute_data():
         app.user_unavailabilities[uid][day].append((start, end))
 
     print("DEBUG: Precomputation completed.")
+
+### API ENDPOINTS FOR INCREMENTAL UPDATES ###
 
 @app.route('/update_user_unavailability/<int:user_id>', methods=['POST'])
 def update_user_unavailability_route(user_id):
@@ -481,6 +520,7 @@ def update_user_subcategories_route(user_id):
 
 @app.route('/refresh_data', methods=['POST'])
 def refresh_data():
+    # Delete in-memory cached DataFrames
     if hasattr(app, 'cached_users_df'):
         del app.cached_users_df
     if hasattr(app, 'cached_activities_df'):
@@ -490,6 +530,14 @@ def refresh_data():
     if hasattr(app, 'cached_user_subcategories_df'):
         del app.cached_user_subcategories_df
 
+    # Also clear relevant cached keys from Redis
+    # Assuming keys are named as "user_profile_*" and "activity_profile_*"
+    for key in cache.scan_iter("user_profile_*"):
+        cache.delete(key)
+    for key in cache.scan_iter("activity_profile_*"):
+        cache.delete(key)
+
+    # Now re-run precompute_data to refresh everything
     precompute_data()
     return jsonify({"message": "Data refreshed successfully"}), 200
 

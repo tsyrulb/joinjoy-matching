@@ -1,21 +1,31 @@
 # modules/data_fetching.py
 from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
 import pandas as pd
-from config import DB_SERVER, DB_NAME, TRUSTED_CONNECTION
+from config import DB_SERVER, DB_NAME, DB_PASSWORD, DB_USER, DB_PORT
 
-DB_USER = "sa"
-DB_PASSWORD = "YourStrongPassword123"
-DB_SERVER = "db"
-DB_NAME = "join-joy-db"
+
+odbc_connect_str = (
+    "DRIVER={ODBC Driver 18 for SQL Server};"
+    f"SERVER=tcp:{DB_SERVER},1433;"
+    f"DATABASE={DB_NAME};"
+    f"UID={DB_USER};"
+    f"PWD={DB_PASSWORD};"
+    "Encrypt=yes;"
+    "TrustServerCertificate=no;"
+    "Connection Timeout=30;"
+)
+
+connection_url = URL.create(
+    "mssql+pyodbc",
+    query={"odbc_connect": odbc_connect_str}
+)
+
+engine = create_engine(connection_url)
 
 def get_engine():
-    connection_str = (
-        f"mssql+pyodbc://{DB_USER}:{DB_PASSWORD}@{DB_SERVER}:1433/{DB_NAME}"
-        "?driver=ODBC+Driver+18+for+SQL+Server"
-        "&TrustServerCertificate=yes"
-        "&Authentication=SqlPassword"
-    )
-    return create_engine(connection_str)
+    return engine
+
 
 def fetch_user_by_id(user_id):
     engine = get_engine()

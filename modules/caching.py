@@ -1,9 +1,9 @@
-# modules/caching.py
 import redis
 import pickle
-from config import REDIS_HOST, REDIS_PORT, REDIS_DB
+from config import REDIS_URL
 
-cache = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+# Use REDIS_URL to connect directly if you prefer:
+cache = redis.Redis.from_url(REDIS_URL)
 
 def get_cached_profile(key, generate_func, *args, expiry=3600):
     if cache.exists(key):
