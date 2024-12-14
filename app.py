@@ -385,11 +385,9 @@ def add_new_activity(activity_id):
     else:
         app.vector_search_activities.delete_user_embedding(activity_id)
 
-
 def precompute_data():
     print("DEBUG: Precomputing data at startup...")
 
-    # Fetch data from DB
     app.cached_users_df = fetch_users()
     app.cached_activities_df = fetch_activities()
     app.cached_subcategories_df = fetch_subcategories()
@@ -410,7 +408,6 @@ def precompute_data():
 
     for _, user in users_df.iterrows():
         user_id = user['Id']
-        # Use caching for user profiles
         user_profile = get_cached_profile(
             key=f"user_profile_{user_id}",
             generate_func=generate_user_profile,
@@ -418,7 +415,6 @@ def precompute_data():
             user_subcategories_df=user_subcategories_df,
             subcategories_df=subcategories_df
         )
-
         app.user_profiles[user_id] = user_profile
         all_user_ids.append(user_id)
         all_user_profiles.append(user_profile)
@@ -451,14 +447,12 @@ def precompute_data():
 
     for _, activity in activities_df.iterrows():
         activity_id = activity['Id']
-        # Use caching for activity profiles
         activity_profile = get_cached_profile(
             key=f"activity_profile_{activity_id}",
             generate_func=generate_activity_profile,
             activity_id=activity_id,
             activities_df=activities_df
         )
-
         app.activity_profiles[activity_id] = activity_profile
         all_activity_ids.append(activity_id)
         all_activity_profiles.append(activity_profile)
@@ -470,7 +464,6 @@ def precompute_data():
         if activity_embeddings_tensor.dim() == 2 and activity_embeddings_tensor.shape[0] > 0:
             activity_embeddings_list = activity_embeddings_tensor.cpu().numpy().tolist()
             app.activity_embeddings = {aid: emb for aid, emb in zip(all_activity_ids, activity_embeddings_list)}
-
             app.vector_search_activities = VectorSearch(
                 collection_name="activity_embeddings",
                 dim=activity_embeddings_tensor.shape[1]
