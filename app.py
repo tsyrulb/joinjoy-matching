@@ -353,6 +353,46 @@ def update_user_unavailability(user_id):
             app.user_unavailabilities[uid][day] = []
         app.user_unavailabilities[uid][day].append((start, end))
 
+def ensure_user_in_cache(user_id):
+    user_id = int(user_id)
+    # Check if user already has a profile and embedding
+    if user_id in app.user_profiles and user_id in app.user_embeddings:
+        return True
+
+    # Check cached_users_df
+    user_row = app.cached_users_df[app.cached_users_df['Id'] == user_id]
+    if user_row.empty:
+        # Try fetching from DB
+        user_db = fetch_user_by_id(user_id)
+        if user_db.empty:
+            # User doesn't exist at all
+            return False
+        app.cached_users_df = pd.concat([app.cached_users_df, user_db], ignore_index=True)
+
+    # Generate profile if missing
+    if user_id not in app.user_profiles:
+        user_subcategories_df = app.cached_user_subcategories_df
+        subcategories_df = app.cached_subcategories_df
+        user_profile = generate_user_profile(user_id, user_subcategories_df, subcategories_df)
+        app.user_profiles[user_id] = user_profile
+
+        if user_profile.strip():
+            new_emb = model.encode([user_profile], convert_to_tensor=True).to(device)
+            embedding = new_emb.squeeze(0).cpu().numpy().tolist()
+            app.user_embeddings[user_id] = embedding
+            app.vector_search.upsert_user_embedding(user_id, embedding)
+        else:
+            # No profile means no embedding
+            if user_id in app.user_embeddings:
+                del app.user_embeddings[user_id]
+            app.vector_search.delete_user_embedding(user_id)
+
+    # After generation, check again
+    if user_id not in app.user_profiles:
+        return False
+    # It's possible user_profile is empty and thus no embeddings
+    # That's not a failure necessarily, but no embeddings will be present.
+    return True
 
 def add_new_activity(activity_id):
     """
@@ -403,20 +443,21 @@ def precompute_data():
 
     # Precompute user profiles & embeddings
     app.user_profiles = {}
+    app.user_embeddings = {}
     all_user_ids = []
     all_user_profiles = []
 
     for _, user in users_df.iterrows():
-        user_id = user['Id']
+        u_id = int(user['Id'])
         user_profile = get_cached_profile(
-            key=f"user_profile_{user_id}",
+            key=f"user_profile_{u_id}",
             generate_func=generate_user_profile,
-            user_id=user_id,
+            user_id=u_id,
             user_subcategories_df=user_subcategories_df,
             subcategories_df=subcategories_df
         )
-        app.user_profiles[user_id] = user_profile
-        all_user_ids.append(user_id)
+        app.user_profiles[u_id] = user_profile
+        all_user_ids.append(u_id)
         all_user_profiles.append(user_profile)
 
     if all_user_profiles:
@@ -446,15 +487,15 @@ def precompute_data():
     all_activity_profiles = []
 
     for _, activity in activities_df.iterrows():
-        activity_id = activity['Id']
+        a_id = int(activity['Id'])
         activity_profile = get_cached_profile(
-            key=f"activity_profile_{activity_id}",
+            key=f"activity_profile_{a_id}",
             generate_func=generate_activity_profile,
-            activity_id=activity_id,
+            activity_id=a_id,
             activities_df=activities_df
         )
-        app.activity_profiles[activity_id] = activity_profile
-        all_activity_ids.append(activity_id)
+        app.activity_profiles[a_id] = activity_profile
+        all_activity_ids.append(a_id)
         all_activity_profiles.append(activity_profile)
 
     if all_activity_profiles:
@@ -481,7 +522,7 @@ def precompute_data():
     # Precompute user unavailabilities
     app.user_unavailabilities = {}
     for _, row in user_unavailabilities_df.iterrows():
-        uid = row['UserId']
+        uid = int(row['UserId'])
         day = row['DayOfWeek']
         start = row['StartTime']
         end = row['EndTime']
@@ -493,7 +534,6 @@ def precompute_data():
         app.user_unavailabilities[uid][day].append((start, end))
 
     print("DEBUG: Precomputation completed.")
-
 ### API ENDPOINTS FOR INCREMENTAL UPDATES ###
 
 @app.route('/update_user_unavailability/<int:user_id>', methods=['POST'])
@@ -571,12 +611,11 @@ def recommend_users():
 
     activity = activities_df[activities_df['Id'] == activity_id]
 
-    # If activity not found in cached DF, try fetching from DB using the module function
     if activity.empty:
         new_activity_df = fetch_activity_by_id(activity_id)
-
         if new_activity_df.empty:
-            # No activity found in DB either, fallback to user-based logic or generic list as before
+            # No activity found in DB either
+            # If we have a requester and embeddings for them:
             if requester_id is not None and requester_id in app.user_embeddings:
                 requester_embedding = app.user_embeddings.get(requester_id)
                 if requester_embedding is not None:
@@ -590,9 +629,13 @@ def recommend_users():
 
                     recommendations = []
                     for _, usr in candidate_users.iterrows():
-                        if usr['Id'] == requester_id:
+                        uid = int(usr['Id'])
+                        if uid == requester_id:
                             continue
-                        user_profile = app.user_profiles.get(usr['Id'], None)
+                        if not ensure_user_in_cache(uid):
+                            # user not found or not cached properly, skip
+                            continue
+                        user_profile = app.user_profiles.get(uid)
                         if not user_profile:
                             continue
 
@@ -601,7 +644,7 @@ def recommend_users():
                         explanation = "We couldn’t find the specified activity, but we used your profile to find similar users."
 
                         recommendations.append({
-                            'UserId': usr['Id'],
+                            'UserId': uid,
                             'UserName': usr['Name'],
                             'SimilarityScore': combined_similarity,
                             'Distance': distance,
@@ -615,13 +658,14 @@ def recommend_users():
                     candidate_users = users_df
                     recommendations = []
                     for _, usr in candidate_users.iterrows():
-                        if usr['Id'] == requester_id:
+                        uid = int(usr['Id'])
+                        if not ensure_user_in_cache(uid):
                             continue
-                        user_profile = app.user_profiles.get(usr['Id'], None)
+                        user_profile = app.user_profiles.get(uid, None)
                         if not user_profile:
                             continue
                         recommendations.append({
-                            'UserId': usr['Id'],
+                            'UserId': uid,
                             'UserName': usr['Name'],
                             'SimilarityScore': 0.5,
                             'Distance': 0.0,
@@ -630,15 +674,18 @@ def recommend_users():
                     recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
                     return jsonify(recommendations[:top_n])
             else:
-                # No activity and no requester_id or no embeddings: generic list
+                # No activity and no requester_id or no embeddings
                 candidate_users = users_df
                 recommendations = []
                 for _, usr in candidate_users.iterrows():
-                    user_profile = app.user_profiles.get(usr['Id'], None)
+                    uid = int(usr['Id'])
+                    if not ensure_user_in_cache(uid):
+                        continue
+                    user_profile = app.user_profiles.get(uid, None)
                     if not user_profile:
                         continue
                     recommendations.append({
-                        'UserId': usr['Id'],
+                        'UserId': uid,
                         'UserName': usr['Name'],
                         'SimilarityScore': 0.5,
                         'Distance': 0.0,
@@ -647,11 +694,9 @@ def recommend_users():
                 recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
                 return jsonify(recommendations[:top_n])
         else:
-            # Activity found in DB, append to cached_activities_df
             app.cached_activities_df = pd.concat([app.cached_activities_df, new_activity_df], ignore_index=True)
             activity = new_activity_df
 
-            # Generate activity profile and embedding
             activity_profile = generate_activity_profile(activity_id, app.cached_activities_df)
             app.activity_profiles[activity_id] = activity_profile
 
@@ -666,32 +711,34 @@ def recommend_users():
             else:
                 app.vector_search_activities.delete_user_embedding(activity_id)
 
-    # Activity is now found (either initially or from DB)
     activity_lat = activity['Latitude'].values[0]
     activity_lon = activity['Longitude'].values[0]
     activity_profile = app.activity_profiles[activity_id]
     activity_embedding = app.activity_embeddings[activity_id]
 
-    created_by_id = activity['CreatedById'].values[0]
+    created_by_id = int(activity['CreatedById'].values[0])
+    if not ensure_user_in_cache(created_by_id):
+        return jsonify({"error": f"Creator with ID {created_by_id} not found"}), 404
+
     owner_row = users_df[users_df['Id'] == created_by_id]
     owner_age = None
     if not owner_row.empty and pd.notnull(owner_row['DateOfBirth'].values[0]):
         owner_age = calculate_age(owner_row['DateOfBirth'].values[0])
 
-    owner_profile = app.user_profiles[created_by_id]
-    owner_embedding = app.user_embeddings[created_by_id]
+    owner_profile = app.user_profiles.get(created_by_id)
+    owner_embedding = app.user_embeddings.get(created_by_id)
+    if not owner_profile or owner_embedding is None:
+        return jsonify({"error": f"Owner profile or embedding not found for user ID {created_by_id}"}), 404
 
     owner_feedbacks = fetch_user_feedbacks(created_by_id)
     positive_subcategories = get_feedback_subcategories(owner_feedbacks, user_subcategories_df, positive=True)
     requester_own_subcategories = user_subcategories_df[user_subcategories_df['UserId'] == created_by_id]['SubcategoryId'].tolist()
 
+    candidate_users = users_df
     if activity_embedding is not None:
-        query_vector = activity_embedding
-        top_candidates = app.vector_search.search_similar_users(query_vector, top_k=100)
-        candidate_user_ids = [hit.id for hit in top_candidates]
+        top_candidates = app.vector_search.search_similar_users(activity_embedding, top_k=100)
+        candidate_user_ids = [int(hit.id) for hit in top_candidates]
         candidate_users = users_df[users_df['Id'].isin(candidate_user_ids)]
-    else:
-        candidate_users = users_df
 
     recommendations = []
     tfidf_vectorizer = TfidfVectorizer()
@@ -700,22 +747,25 @@ def recommend_users():
     activity_dt = pd.to_datetime(activity['Date'].values[0])
 
     for _, usr in candidate_users.iterrows():
-        if usr['Id'] == created_by_id:
+        uid = int(usr['Id'])
+        if uid == created_by_id:
+            continue
+        if not ensure_user_in_cache(uid):
             continue
 
         distance = calculate_distance(activity_lat, activity_lon, usr['Latitude'], usr['Longitude'])
         if distance > usr['DistanceWillingToTravel']:
             continue
 
-        if not is_user_available(usr['Id'], activity_dt):
+        if not is_user_available(uid, activity_dt):
             continue
 
-        user_id = usr['Id']
-        user_profile = app.user_profiles[user_id]
-        if not user_profile:
+        user_profile = app.user_profiles.get(uid)
+        user_embedding = app.user_embeddings.get(uid)
+        if not user_profile or user_embedding is None:
             continue
 
-        user_subcat_list = user_subcategories_df[user_subcategories_df['UserId'] == user_id]['SubcategoryId'].tolist()
+        user_subcat_list = user_subcategories_df[user_subcategories_df['UserId'] == uid]['SubcategoryId'].tolist()
         adjusted_user_profile = adjust_profile_with_feedback(
             user_profile, user_subcat_list, positive_subcategories, subcategories_df
         )
@@ -723,7 +773,6 @@ def recommend_users():
         tfidf_similarity_activity = compute_tfidf_similarity(adjusted_user_profile, activity_profile, tfidf_vectorizer)
         tfidf_similarity_owner = compute_tfidf_similarity(adjusted_user_profile, owner_profile, tfidf_vectorizer)
 
-        user_embedding = app.user_embeddings.get(user_id, None)
         if user_embedding is not None and owner_embedding is not None and activity_embedding is not None:
             ue_t = torch.tensor(user_embedding, dtype=torch.float32, device=device)
             ae_t = torch.tensor(activity_embedding, dtype=torch.float32, device=device)
@@ -758,7 +807,7 @@ def recommend_users():
 
         explanation = explain_recommendation(
             user_id=created_by_id,
-            recommended_user=user_id,
+            recommended_user=uid,
             user_subcat_list=user_subcat_list,
             positive_subcategories=positive_subcategories,
             requester_own_subcategories=requester_own_subcategories,
@@ -771,7 +820,7 @@ def recommend_users():
         )
 
         recommendations.append({
-            'UserId': usr['Id'],
+            'UserId': uid,
             'UserName': usr['Name'],
             'SimilarityScore': combined_similarity,
             'Distance': distance,
@@ -781,6 +830,7 @@ def recommend_users():
     recommendations.sort(key=lambda x: x['SimilarityScore'], reverse=True)
     return jsonify(recommendations[:top_n])
 
+
 @app.route('/recommend_activities', methods=['GET'])
 def recommend_activities():
     user_id = request.args.get('user_id', None)
@@ -789,7 +839,11 @@ def recommend_activities():
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
 
-    user_id = int(user_id)
+    try:
+        user_id = int(user_id)
+    except ValueError:
+        return jsonify({"error": "Invalid user_id"}), 400
+
     users_df = app.cached_users_df
     activities_df = app.cached_activities_df
     subcategories_df = app.cached_subcategories_df
@@ -797,18 +851,15 @@ def recommend_activities():
 
     user = users_df[users_df['Id'] == user_id]
 
-    # If user not found in cached users, try to fetch from DB
     if user.empty:
-        user_db = fetch_user_by_id(user_id)  # uses the helper function from data_fetching.py
+        user_db = fetch_user_by_id(user_id)
         if user_db.empty:
             return jsonify({"error": f"User with ID {user_id} not found"}), 404
 
-        # Append this user to the cached DataFrame
         app.cached_users_df = pd.concat([app.cached_users_df, user_db], ignore_index=True)
         users_df = app.cached_users_df
         user = user_db
 
-        # Generate user profile and embeddings for the newly added user
         user_profile = generate_user_profile(user_id, user_subcategories_df, subcategories_df)
         app.user_profiles[user_id] = user_profile
 
@@ -818,12 +869,10 @@ def recommend_activities():
             app.user_embeddings[user_id] = embedding
             app.vector_search.upsert_user_embedding(user_id, embedding)
         else:
-            # If user has no profile, remove embedding if exists
             if user_id in app.user_embeddings:
                 del app.user_embeddings[user_id]
             app.vector_search.delete_user_embedding(user_id)
 
-    # Continue as before, now `user` is guaranteed to be found
     if user.empty:
         return jsonify({"error": f"User with ID {user_id} not found"}), 404
 
@@ -831,7 +880,8 @@ def recommend_activities():
     user_lon = user['Longitude'].values[0]
     user_distance_limit = user['DistanceWillingToTravel'].values[0]
 
-    user_profile = app.user_profiles[user_id]
+    user_profile = app.user_profiles.get(user_id)
+    user_embedding = app.user_embeddings.get(user_id)
     if not user_profile:
         return jsonify({"error": f"User profile could not be generated for user_id {user_id}"}), 404
 
@@ -842,17 +892,17 @@ def recommend_activities():
     if pd.notnull(user['DateOfBirth'].values[0]):
         user_age = calculate_age(user['DateOfBirth'].values[0])
 
-    # Vector search for similar activities
-    user_embedding = app.user_embeddings.get(user_id, None)
+    # If no embedding, fall back to all activities
     if user_embedding is not None:
         top_candidates = app.vector_search_activities.search_similar_users(user_embedding, top_k=100)
-        candidate_activity_ids = [hit.id for hit in top_candidates]
+        candidate_activity_ids = [int(hit.id) for hit in top_candidates]
         candidate_activities = activities_df[activities_df['Id'].isin(candidate_activity_ids)]
     else:
         candidate_activities = activities_df
 
     recommendations = []
     for _, activity in candidate_activities.iterrows():
+        a_id = int(activity['Id'])
         activity_lat = activity['Latitude']
         activity_lon = activity['Longitude']
         if pd.isnull(activity_lat) or pd.isnull(activity_lon):
@@ -862,7 +912,7 @@ def recommend_activities():
         if distance > user_distance_limit:
             continue
 
-        activity_profile = app.activity_profiles[activity['Id']]
+        activity_profile = app.activity_profiles.get(a_id)
         if not activity_profile:
             continue
 
@@ -873,19 +923,21 @@ def recommend_activities():
             subcategories_df
         )
 
-        # Create and fit TF-IDF vectorizer for this specific comparison
         tfidf_vectorizer = TfidfVectorizer()
         tfidf_vectorizer.fit([adjusted_user_profile, activity_profile])
 
         semantic_similarity = compute_semantic_similarity(adjusted_user_profile, activity_profile)
         tfidf_similarity = compute_tfidf_similarity(adjusted_user_profile, activity_profile, tfidf_vectorizer)
 
-        creator_id = activity['CreatedById']
+        creator_id = int(activity['CreatedById'])
+        if not ensure_user_in_cache(creator_id):
+            # If creator not found, skip this activity
+            continue
+
         creator_age = None
-        if creator_id in users_df['Id'].values:
-            creator = users_df[users_df['Id'] == creator_id]
-            if pd.notnull(creator['DateOfBirth'].values[0]):
-                creator_age = calculate_age(creator['DateOfBirth'].values[0])
+        creator_row = users_df[users_df['Id'] == creator_id]
+        if not creator_row.empty and pd.notnull(creator_row['DateOfBirth'].values[0]):
+            creator_age = calculate_age(creator_row['DateOfBirth'].values[0])
 
         age_similarity = 0
         if user_age is not None and creator_age is not None:
@@ -901,7 +953,7 @@ def recommend_activities():
         activity_subcats = user_subcategories_df[user_subcategories_df['UserId'] == creator_id]['SubcategoryId'].tolist()
         explanation = explain_activity_recommendation(
             user_id=user_id,
-            activity_id=activity['Id'],
+            activity_id=a_id,
             user_subcat_list=activity_subcats,
             positive_subcategories=positive_subcategories,
             requester_own_subcategories=user_subcategories_df[user_subcategories_df['UserId'] == user_id]['SubcategoryId'].tolist(),
@@ -913,7 +965,7 @@ def recommend_activities():
         )
 
         recommendations.append({
-            'ActivityId': activity['Id'],
+            'ActivityId': a_id,
             'ActivityName': activity['Name'],
             'SimilarityScore': combined_similarity,
             'Distance': distance,
@@ -923,7 +975,6 @@ def recommend_activities():
     recommendations = sorted(recommendations, key=lambda x: x['SimilarityScore'], reverse=True)[:top_n]
     print(recommendations)
     return jsonify(recommendations)
-
 
 precompute_data()
 
