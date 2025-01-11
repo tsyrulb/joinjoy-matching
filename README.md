@@ -103,4 +103,3 @@ This repository contains the Flask-based backend (the "Flask API") of the JoinJo
 - **Database Queries**: Ensuring efficient queries to Azure SQL and caching results in Redis improved performance.
 - **Semantic Recommendations**: Balancing semantic similarity, location, and user feedback required iterative refinement and testing.
 
-```
