@@ -1,9 +1,11 @@
+[![Frontend](https://img.shields.io/badge/GitHub-Frontend-blue?style=for-the-badge)](https://github.com/tsyrulb/join-joy-front)
+[![Backend](https://img.shields.io/badge/GitHub-Backend-blue?style=for-the-badge)](https://github.com/tsyrulb/joinjoy)
+
 ---
 
 # Flask API for JoinJoy
 
 This repository contains the Flask-based backend (the "Flask API") of the JoinJoy project, a platform that intelligently recommends activities and users for social outings. It integrates semantic embeddings, vector search, and personalized recommendations.
-![Description of GIF](JoinJoy4.gif)
 
 ## Key Features
 
@@ -12,6 +14,7 @@ This repository contains the Flask-based backend (the "Flask API") of the JoinJo
 - **Semantic Recommendations**: Combines user interest embeddings, TF-IDF analysis, geographic distances, and feedback adjustments to recommend activities and users that genuinely match preferences.
 - **Caching & Performance**: Integrates Redis for caching frequently accessed data and results.
 - **Data Sources**: Retrieves user, activity, and feedback data from Azure SQL Database. Handles file uploads (like profile photos) via Azure Blob Storage.
+![Description of GIF](JoinJoy4.gif)
 
 ## Technologies & Libraries
 
