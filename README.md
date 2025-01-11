@@ -1,5 +1,5 @@
 [![Frontend](https://img.shields.io/badge/GitHub-Frontend-blue?style=for-the-badge)](https://github.com/tsyrulb/join-joy-front)
-[![Backend](https://img.shields.io/badge/GitHub-Backend-blue?style=for-the-badge)](https://github.com/tsyrulb/joinjoy)
+[![Backend](https://img.shields.io/badge/GitHub-Backend-yellow?style=for-the-badge)](https://github.com/tsyrulb/joinjoy)
 
 ---
 
